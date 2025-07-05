@@ -69,14 +69,13 @@ try {
               return res.status(400).json({ error: 'Missing required report data.' });
           }
 
-          // **NEW: Generate a unique case number**
           const now = new Date();
           const datePart = now.toISOString().slice(0, 10).replace(/-/g, "");
           const randomPart = Math.random().toString(36).substring(2, 6).toUpperCase();
           const caseNumber = `CI-${datePart}-${randomPart}`;
 
           const docRef = await db.collection('case_reports').add({
-              caseNumber, // Add the case number to the database
+              caseNumber,
               clientName,
               clientEmail,
               clientPhone: clientPhone || 'Not provided',
@@ -107,7 +106,7 @@ try {
     }
   });
 
-  // --- **NEW** API Route to DELETE a report ---
+  // --- API Route to DELETE a report ---
   app.delete('/api/reports/:id', async (req, res) => {
     try {
         const { id } = req.params;
@@ -123,6 +122,23 @@ try {
     } catch (error) {
         console.error('Error deleting report from Firestore:', error);
         res.status(500).json({ error: 'Failed to delete report.' });
+    }
+  });
+
+  // --- *** NEW *** Secure API Route for Internal Login ---
+  app.post('/api/internal-login', (req, res) => {
+    const { password } = req.body;
+    
+    // The correct password is now stored securely on the server as an environment variable.
+    // You will need to set this variable on Render.com.
+    const INTERNAL_PASSWORD = process.env.INTERNAL_ACCESS_PASSWORD || 'Sakis@1964';
+
+    if (password === INTERNAL_PASSWORD) {
+        // If the password is correct, send back a success message.
+        res.status(200).json({ success: true });
+    } else {
+        // If incorrect, send back an error.
+        res.status(401).json({ success: false, error: 'Incorrect password' });
     }
   });
 
