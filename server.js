@@ -1,11 +1,11 @@
 // --- Legal Intake Bot - Backend ---
-// FINAL VERSION with Firestore read/write, case numbers, delete, and token generation
+// FINAL VERSION with Firestore, token generation, and corrected AI Model
 
 const express = require('express');
 const fetch = require('node-fetch');
 const cors = require('cors');
 const admin = require('firebase-admin');
-const crypto = require('crypto'); // Import crypto for unique IDs
+const crypto = require('crypto');
 require('dotenv').config();
 
 // --- Initialize Firebase Admin SDK ---
@@ -15,10 +15,8 @@ try {
   const localSecretPath = './serviceAccountKey.json';
 
   if (require('fs').existsSync(renderSecretPath)) {
-    console.log('Initializing Firebase with Render secret file...');
     serviceAccount = require(renderSecretPath);
   } else {
-    console.log('Initializing Firebase with local service account file...');
     serviceAccount = require(localSecretPath);
   }
 
@@ -38,22 +36,37 @@ try {
   // --- API Route for Gemini ---
   app.post('/api/gemini', async (req, res) => {
     try {
-      const { prompt } = req.body;
+      const { prompt, jsonMode = false } = req.body;
       if (!prompt) return res.status(400).json({ error: 'Prompt is required.' });
 
       const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
       if (!GEMINI_API_KEY) throw new Error("GEMINI_API_KEY is not set.");
       
-      const API_ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${GEMINI_API_KEY}`;
+      // **FIXED**: Using a current, stable model name.
+      const modelName = 'gemini-1.5-flash-latest';
+      const API_ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${GEMINI_API_KEY}`;
+
+      const payload = {
+        contents: [{ parts: [{ text: prompt }] }]
+      };
+
+      if (jsonMode) {
+        payload.generationConfig = {
+          responseMimeType: "application/json",
+        };
+      }
 
       const geminiResponse = await fetch(API_ENDPOINT, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
+        body: JSON.stringify(payload)
       });
 
       const geminiData = await geminiResponse.json();
-      if (!geminiResponse.ok) throw new Error(geminiData?.error?.message || 'Google API Error');
+      if (!geminiResponse.ok) {
+        const errorMessage = geminiData?.error?.message || 'Google API Error';
+        throw new Error(errorMessage);
+      }
       
       res.json(geminiData);
     } catch (error) {
@@ -81,7 +94,6 @@ try {
               reportContent,
               createdAt: admin.firestore.FieldValue.serverTimestamp()
           });
-          console.log('Report saved with ID: ', docRef.id);
           res.status(200).json({ success: true, documentId: docRef.id });
       } catch (error) {
           console.error('Error saving report to Firestore:', error);
@@ -108,11 +120,8 @@ try {
   app.delete('/api/reports/:id', async (req, res) => {
     try {
         const { id } = req.params;
-        if (!id) {
-            return res.status(400).json({ error: 'Document ID is required.' });
-        }
+        if (!id) return res.status(400).json({ error: 'Document ID is required.' });
         await db.collection('case_reports').doc(id).delete();
-        console.log('Report with ID deleted: ', id);
         res.status(200).json({ success: true, message: 'Report deleted successfully.' });
     } catch (error) {
         console.error('Error deleting report from Firestore:', error);
@@ -120,15 +129,11 @@ try {
     }
   });
 
-  // --- **NEW** API Route to Generate a Secure Token ---
+  // --- API Route to Generate a Secure Token ---
   app.post('/api/generate-token', async (req, res) => {
     try {
-        // Generate a unique ID for this token. This will be the user's temporary ID.
         const uid = crypto.randomUUID();
-        
-        // Create a custom Firebase authentication token
         const firebaseToken = await admin.auth().createCustomToken(uid);
-        
         res.status(200).json({ success: true, token: firebaseToken });
     } catch (error) {
         console.error('Error generating token:', error);
@@ -136,15 +141,13 @@ try {
     }
   });
 
-  // --- **NEW** API Route for Internal/Developer Login ---
+  // --- API Route for Internal/Developer Login ---
   app.post('/api/internal-login', (req, res) => {
     const { password } = req.body;
     const correctPassword = process.env.INTERNAL_PASSWORD;
-
     if (!correctPassword) {
         return res.status(500).json({ success: false, error: 'Internal password is not set on the server.' });
     }
-
     if (password === correctPassword) {
         res.status(200).json({ success: true });
     } else {
