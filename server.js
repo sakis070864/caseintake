@@ -5,6 +5,7 @@ const express = require('express');
 const fetch = require('node-fetch');
 const cors = require('cors');
 const admin = require('firebase-admin');
+const { v4: uuidv4 } = require('uuid'); // Use a robust library for unique IDs
 require('dotenv').config();
 
 // --- Initialize Firebase Admin SDK ---
@@ -33,6 +34,56 @@ try {
 
   app.use(cors());
   app.use(express.json());
+
+  // --- *** NEW *** API Route to Generate a Secure, Single-Use Token ---
+  app.post('/api/generate-token', async (req, res) => {
+    try {
+        const token = uuidv4(); // Generate a unique token
+        const tokenRef = db.collection('access_tokens').doc(token);
+
+        await tokenRef.set({
+            used: false,
+            createdAt: admin.firestore.FieldValue.serverTimestamp()
+        });
+
+        console.log('Generated new access token:', token);
+        res.status(200).json({ success: true, token: token });
+    } catch (error) {
+        console.error('Error generating token:', error);
+        res.status(500).json({ error: 'Failed to generate access token.' });
+    }
+  });
+
+  // --- *** NEW *** API Route to Verify a Token ---
+  app.post('/api/verify-token', async (req, res) => {
+    try {
+        const { token } = req.body;
+        if (!token) {
+            return res.status(400).json({ success: false, error: 'Token is required.' });
+        }
+
+        const tokenRef = db.collection('access_tokens').doc(token);
+        const tokenDoc = await tokenRef.get();
+
+        if (!tokenDoc.exists) {
+            return res.status(404).json({ success: false, error: 'Invalid token.' });
+        }
+
+        if (tokenDoc.data().used) {
+            return res.status(403).json({ success: false, error: 'This link has already been used.' });
+        }
+
+        // Mark the token as used so it cannot be used again
+        await tokenRef.update({ used: true });
+
+        res.status(200).json({ success: true, message: 'Token is valid.' });
+
+    } catch (error) {
+        console.error('Error verifying token:', error);
+        res.status(500).json({ error: 'Failed to verify token.' });
+    }
+  });
+
 
   // --- API Route for Gemini ---
   app.post('/api/gemini', async (req, res) => {
@@ -125,19 +176,14 @@ try {
     }
   });
 
-  // --- *** NEW *** Secure API Route for Internal Login ---
+  // --- Secure API Route for Internal Login ---
   app.post('/api/internal-login', (req, res) => {
     const { password } = req.body;
-    
-    // The correct password is now stored securely on the server as an environment variable.
-    // You will need to set this variable on Render.com.
     const INTERNAL_PASSWORD = process.env.INTERNAL_ACCESS_PASSWORD || 'Sakis@1964';
 
     if (password === INTERNAL_PASSWORD) {
-        // If the password is correct, send back a success message.
         res.status(200).json({ success: true });
     } else {
-        // If incorrect, send back an error.
         res.status(401).json({ success: false, error: 'Incorrect password' });
     }
   });
