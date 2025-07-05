@@ -5,15 +5,17 @@ const express = require('express');
 const fetch = require('node-fetch');
 const cors = require('cors');
 const admin = require('firebase-admin');
-const { v4: uuidv4 } = require('uuid'); // Use a robust library for unique IDs
 require('dotenv').config();
 
 // --- Initialize Firebase Admin SDK ---
 try {
   let serviceAccount;
+  // Path for Render.com's secret files
   const renderSecretPath = '/etc/secrets/serviceAccountKey.json';
+  // Path for local development
   const localSecretPath = './serviceAccountKey.json';
 
+  // Check if running in a Render environment
   if (require('fs').existsSync(renderSecretPath)) {
     console.log('Initializing Firebase with Render secret file...');
     serviceAccount = require(renderSecretPath);
@@ -32,57 +34,9 @@ try {
   const app = express();
   const PORT = process.env.PORT || 3001;
 
-  app.use(cors());
-  app.use(express.json());
-
-  // --- API Route to Generate a Secure, Single-Use Token ---
-  app.post('/api/generate-token', async (req, res) => {
-    try {
-        const token = uuidv4(); // Generate a unique token
-        const tokenRef = db.collection('access_tokens').doc(token);
-
-        await tokenRef.set({
-            used: false,
-            createdAt: admin.firestore.FieldValue.serverTimestamp()
-        });
-
-        console.log('Generated new access token:', token);
-        res.status(200).json({ success: true, token: token });
-    } catch (error) {
-        console.error('Error generating token:', error);
-        res.status(500).json({ error: 'Failed to generate access token.' });
-    }
-  });
-
-  // --- API Route to Verify a Token ---
-  app.post('/api/verify-token', async (req, res) => {
-    try {
-        const { token } = req.body;
-        if (!token) {
-            return res.status(400).json({ success: false, error: 'Token is required.' });
-        }
-
-        const tokenRef = db.collection('access_tokens').doc(token);
-        const tokenDoc = await tokenRef.get();
-
-        if (!tokenDoc.exists) {
-            return res.status(404).json({ success: false, error: 'Invalid token.' });
-        }
-
-        if (tokenDoc.data().used) {
-            return res.status(403).json({ success: false, error: 'This link has already been used.' });
-        }
-        
-        // This route now only CHECKS the token. It does NOT mark it as used.
-        // The token is marked as used only after a report is successfully submitted.
-        res.status(200).json({ success: true, message: 'Token is valid.' });
-
-    } catch (error) {
-        console.error('Error verifying token:', error);
-        res.status(500).json({ error: 'Failed to verify token.' });
-    }
-  });
-
+  // --- Middleware ---
+  app.use(cors()); // Enable Cross-Origin Resource Sharing
+  app.use(express.json()); // Parse JSON bodies
 
   // --- API Route for Gemini ---
   app.post('/api/gemini', async (req, res) => {
@@ -91,9 +45,9 @@ try {
       if (!prompt) return res.status(400).json({ error: 'Prompt is required.' });
 
       const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-      if (!GEMINI_API_KEY) throw new Error("GEMINI_API_KEY is not set.");
+      if (!GEMINI_API_KEY) throw new Error("GEMINI_API_KEY is not set in the environment variables.");
       
-      const API_ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key=${GEMINI_API_KEY}`;
+      const API_ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${GEMINI_API_KEY}`;
 
       const geminiResponse = await fetch(API_ENDPOINT, {
         method: 'POST',
@@ -111,26 +65,15 @@ try {
     }
   });
 
-  // --- *** UPDATED *** API Route to Save Reports and Invalidate Token ---
+  // --- API Route to Save Reports to Firestore ---
   app.post('/api/save-report', async (req, res) => {
       try {
-          const { clientName, clientEmail, clientPhone, reportContent, token } = req.body;
+          const { clientName, clientEmail, clientPhone, reportContent } = req.body;
           if (!clientName || !clientEmail || !reportContent) {
               return res.status(400).json({ error: 'Missing required report data.' });
           }
-          if (!token) {
-              return res.status(400).json({ error: 'Missing access token.' });
-          }
 
-          // Verify the token again right before saving to prevent any race conditions.
-          const tokenRef = db.collection('access_tokens').doc(token);
-          const tokenDoc = await tokenRef.get();
-
-          if (!tokenDoc.exists || tokenDoc.data().used) {
-              return res.status(403).json({ error: 'Invalid or already used token.' });
-          }
-
-          // --- Save the Report ---
+          // Generate a unique case number
           const now = new Date();
           const datePart = now.toISOString().slice(0, 10).replace(/-/g, "");
           const randomPart = Math.random().toString(36).substring(2, 6).toUpperCase();
@@ -144,11 +87,8 @@ try {
               reportContent,
               createdAt: admin.firestore.FieldValue.serverTimestamp()
           });
-          
-          // --- Invalidate the Token ---
-          await tokenRef.update({ used: true });
 
-          console.log(`Report saved with ID: ${docRef.id}. Token invalidated: ${token}`);
+          console.log('Report saved with ID: ', docRef.id);
           res.status(200).json({ success: true, documentId: docRef.id });
       } catch (error) {
           console.error('Error saving report to Firestore:', error);
@@ -156,7 +96,7 @@ try {
       }
   });
 
-  // --- API Route to GET all reports ---
+  // --- API Route to GET all reports from Firestore ---
   app.get('/api/reports', async (req, res) => {
     try {
         const reportsSnapshot = await db.collection('case_reports').orderBy('createdAt', 'desc').get();
@@ -171,7 +111,7 @@ try {
     }
   });
 
-  // --- API Route to DELETE a report ---
+  // --- API Route to DELETE a report from Firestore ---
   app.delete('/api/reports/:id', async (req, res) => {
     try {
         const { id } = req.params;
@@ -190,18 +130,6 @@ try {
     }
   });
 
-  // --- Secure API Route for Internal Login ---
-  app.post('/api/internal-login', (req, res) => {
-    const { password } = req.body;
-    const INTERNAL_PASSWORD = process.env.INTERNAL_ACCESS_PASSWORD || 'Sakis@1964';
-
-    if (password === INTERNAL_PASSWORD) {
-        res.status(200).json({ success: true });
-    } else {
-        res.status(401).json({ success: false, error: 'Incorrect password' });
-    }
-  });
-
 
   app.listen(PORT, () => {
     console.log(`Server is running on http://localhost:${PORT}`);
@@ -209,5 +137,5 @@ try {
 
 } catch (error) {
     console.error('Firebase initialization failed:', error);
-    process.exit(1);
+    process.exit(1); // Exit the process if Firebase can't connect
 }
