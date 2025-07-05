@@ -1,5 +1,5 @@
 // --- Legal Intake Bot - Backend ---
-// FINAL VERSION with Firestore, token generation, and optimized AI Model
+// FINAL VERSION with Firestore, token generation, and optimized AI Model for Quota
 
 const express = require('express');
 const fetch = require('node-fetch');
@@ -163,4 +163,6 @@ try {
 } catch (error) {
     console.error('Firebase initialization failed:', error);
     process.exit(1);
+}
+
 }
