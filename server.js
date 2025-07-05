@@ -35,7 +35,7 @@ try {
   app.use(cors());
   app.use(express.json());
 
-  // --- *** NEW *** API Route to Generate a Secure, Single-Use Token ---
+  // --- API Route to Generate a Secure, Single-Use Token ---
   app.post('/api/generate-token', async (req, res) => {
     try {
         const token = uuidv4(); // Generate a unique token
@@ -54,7 +54,7 @@ try {
     }
   });
 
-  // --- *** NEW *** API Route to Verify a Token ---
+  // --- API Route to Verify a Token ---
   app.post('/api/verify-token', async (req, res) => {
     try {
         const { token } = req.body;
@@ -72,10 +72,9 @@ try {
         if (tokenDoc.data().used) {
             return res.status(403).json({ success: false, error: 'This link has already been used.' });
         }
-
-        // Mark the token as used so it cannot be used again
-        await tokenRef.update({ used: true });
-
+        
+        // This route now only CHECKS the token. It does NOT mark it as used.
+        // The token is marked as used only after a report is successfully submitted.
         res.status(200).json({ success: true, message: 'Token is valid.' });
 
     } catch (error) {
@@ -112,14 +111,26 @@ try {
     }
   });
 
-  // --- API Route to Save Reports ---
+  // --- *** UPDATED *** API Route to Save Reports and Invalidate Token ---
   app.post('/api/save-report', async (req, res) => {
       try {
-          const { clientName, clientEmail, clientPhone, reportContent } = req.body;
+          const { clientName, clientEmail, clientPhone, reportContent, token } = req.body;
           if (!clientName || !clientEmail || !reportContent) {
               return res.status(400).json({ error: 'Missing required report data.' });
           }
+          if (!token) {
+              return res.status(400).json({ error: 'Missing access token.' });
+          }
 
+          // Verify the token again right before saving to prevent any race conditions.
+          const tokenRef = db.collection('access_tokens').doc(token);
+          const tokenDoc = await tokenRef.get();
+
+          if (!tokenDoc.exists || tokenDoc.data().used) {
+              return res.status(403).json({ error: 'Invalid or already used token.' });
+          }
+
+          // --- Save the Report ---
           const now = new Date();
           const datePart = now.toISOString().slice(0, 10).replace(/-/g, "");
           const randomPart = Math.random().toString(36).substring(2, 6).toUpperCase();
@@ -133,8 +144,11 @@ try {
               reportContent,
               createdAt: admin.firestore.FieldValue.serverTimestamp()
           });
+          
+          // --- Invalidate the Token ---
+          await tokenRef.update({ used: true });
 
-          console.log('Report saved with ID: ', docRef.id);
+          console.log(`Report saved with ID: ${docRef.id}. Token invalidated: ${token}`);
           res.status(200).json({ success: true, documentId: docRef.id });
       } catch (error) {
           console.error('Error saving report to Firestore:', error);
