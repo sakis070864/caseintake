@@ -1,5 +1,5 @@
 // --- Legal Intake Bot - Backend ---
-// FINAL VERSION with Firestore, token generation, and corrected AI Model
+// FINAL VERSION with Firestore, token generation, and optimized AI Model
 
 const express = require('express');
 const fetch = require('node-fetch');
@@ -42,7 +42,7 @@ try {
       const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
       if (!GEMINI_API_KEY) throw new Error("GEMINI_API_KEY is not set.");
       
-      // **FIXED**: Using a current, stable model name.
+      // **FIXED**: Switched to a more efficient model to avoid quota errors.
       const modelName = 'gemini-1.5-flash-latest';
       const API_ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${GEMINI_API_KEY}`;
 
