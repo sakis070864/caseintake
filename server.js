@@ -1,5 +1,5 @@
 // --- Legal Intake Bot - Backend ---
-// FINAL VERSION with Firestore, token generation, and optimized AI Model for Quota
+// FINAL, PRODUCTION-READY VERSION with Rate Limiting to prevent quota errors.
 
 const express = require('express');
 const fetch = require('node-fetch');
@@ -32,9 +32,37 @@ try {
 
   app.use(cors());
   app.use(express.json());
+  
+  // --- **NEW**: Rate Limiter Middleware ---
+  // This will prevent the "quota exceeded" error by controlling traffic.
+  const rateLimitStore = new Map();
+  const RATE_LIMIT_WINDOW_MS = 60 * 1000; // 1 minute
+  const MAX_REQUESTS_PER_WINDOW = 15; // Allow 15 requests per minute per user
 
-  // --- API Route for Gemini ---
-  app.post('/api/gemini', async (req, res) => {
+  const rateLimiter = (req, res, next) => {
+    const ip = req.ip;
+    const now = Date.now();
+    const userRequests = rateLimitStore.get(ip) || [];
+
+    // Filter out requests that are older than the window
+    const recentRequests = userRequests.filter(timestamp => now - timestamp < RATE_LIMIT_WINDOW_MS);
+
+    if (recentRequests.length >= MAX_REQUESTS_PER_WINDOW) {
+      return res.status(429).json({ 
+        error: 'Too many requests. Please wait a minute and try again.' 
+      });
+    }
+
+    recentRequests.push(now);
+    rateLimitStore.set(ip, recentRequests);
+    next();
+  };
+
+
+  // --- API Routes ---
+
+  // Apply the rate limiter ONLY to the Gemini API endpoint
+  app.post('/api/gemini', rateLimiter, async (req, res) => {
     try {
       const { prompt, jsonMode = false } = req.body;
       if (!prompt) return res.status(400).json({ error: 'Prompt is required.' });
@@ -42,7 +70,6 @@ try {
       const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
       if (!GEMINI_API_KEY) throw new Error("GEMINI_API_KEY is not set.");
       
-      // **FIXED**: Switched to a more efficient model to avoid quota errors.
       const modelName = 'gemini-1.5-flash-latest';
       const API_ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${GEMINI_API_KEY}`;
 
@@ -75,7 +102,6 @@ try {
     }
   });
 
-  // --- API Route to Save Reports ---
   app.post('/api/save-report', async (req, res) => {
       try {
           const { clientName, clientEmail, clientPhone, reportContent } = req.body;
@@ -101,7 +127,6 @@ try {
       }
   });
 
-  // --- API Route to GET all reports ---
   app.get('/api/reports', async (req, res) => {
     try {
         const reportsSnapshot = await db.collection('case_reports').orderBy('createdAt', 'desc').get();
@@ -116,7 +141,6 @@ try {
     }
   });
 
-  // --- API Route to DELETE a report ---
   app.delete('/api/reports/:id', async (req, res) => {
     try {
         const { id } = req.params;
@@ -129,7 +153,6 @@ try {
     }
   });
 
-  // --- API Route to Generate a Secure Token ---
   app.post('/api/generate-token', async (req, res) => {
     try {
         const uid = crypto.randomUUID();
@@ -141,7 +164,6 @@ try {
     }
   });
 
-  // --- API Route for Internal/Developer Login ---
   app.post('/api/internal-login', (req, res) => {
     const { password } = req.body;
     const correctPassword = process.env.INTERNAL_PASSWORD;
@@ -163,6 +185,4 @@ try {
 } catch (error) {
     console.error('Firebase initialization failed:', error);
     process.exit(1);
-}
-
 }
