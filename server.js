@@ -189,4 +189,3 @@ try {
     console.error('Firebase initialization failed:', error);
     process.exit(1);
 }
-
