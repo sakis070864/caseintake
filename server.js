@@ -1,5 +1,5 @@
 // --- Legal Intake Bot - Backend ---
-// FINAL, PRODUCTION-READY VERSION with Rate Limiting to prevent quota errors.
+// FINAL, PRODUCTION-READY VERSION with Rate Limiting and Keep-Alive endpoint.
 
 const express = require('express');
 const fetch = require('node-fetch');
@@ -33,8 +33,7 @@ try {
   app.use(cors());
   app.use(express.json());
   
-  // --- **NEW**: Rate Limiter Middleware ---
-  // This will prevent the "quota exceeded" error by controlling traffic.
+  // --- Rate Limiter Middleware ---
   const rateLimitStore = new Map();
   const RATE_LIMIT_WINDOW_MS = 60 * 1000; // 1 minute
   const MAX_REQUESTS_PER_WINDOW = 15; // Allow 15 requests per minute per user
@@ -44,7 +43,6 @@ try {
     const now = Date.now();
     const userRequests = rateLimitStore.get(ip) || [];
 
-    // Filter out requests that are older than the window
     const recentRequests = userRequests.filter(timestamp => now - timestamp < RATE_LIMIT_WINDOW_MS);
 
     if (recentRequests.length >= MAX_REQUESTS_PER_WINDOW) {
@@ -60,6 +58,11 @@ try {
 
 
   // --- API Routes ---
+
+  // **NEW**: Add a root endpoint to wake up the server and check its status.
+  app.get('/', (req, res) => {
+    res.send('Backend is alive and running!');
+  });
 
   // Apply the rate limiter ONLY to the Gemini API endpoint
   app.post('/api/gemini', rateLimiter, async (req, res) => {
@@ -186,3 +189,4 @@ try {
     console.error('Firebase initialization failed:', error);
     process.exit(1);
 }
+
