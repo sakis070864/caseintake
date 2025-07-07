@@ -1,11 +1,12 @@
 // --- Legal Intake Bot - Backend ---
-// FINAL, PRODUCTION-READY VERSION with Rate Limiting and Keep-Alive endpoint.
+// SECURE VERSION with temporary, single-use credentials and correct CORS policy.
 
 const express = require('express');
 const fetch = require('node-fetch');
 const cors = require('cors');
 const admin = require('firebase-admin');
 const crypto = require('crypto');
+const bcrypt = require('bcrypt');
 require('dotenv').config();
 
 // --- Initialize Firebase Admin SDK ---
@@ -30,25 +31,38 @@ try {
   const app = express();
   const PORT = process.env.PORT || 3001;
 
-  app.use(cors());
+  // FIX: Specific CORS configuration to allow both frontend applications
+  const allowedOrigins = [
+      'https://newcase.netlify.app', 
+      'https://caseintake-chat-bot.netlify.app'
+  ];
+
+  const corsOptions = {
+      origin: (origin, callback) => {
+          if (allowedOrigins.includes(origin) || !origin) {
+              callback(null, true);
+          } else {
+              callback(new Error('Not allowed by CORS'));
+          }
+      }
+  };
+
+  app.use(cors(corsOptions));
   app.use(express.json());
   
   // --- Rate Limiter Middleware ---
   const rateLimitStore = new Map();
-  const RATE_LIMIT_WINDOW_MS = 60 * 1000; // 1 minute
-  const MAX_REQUESTS_PER_WINDOW = 15; // Allow 15 requests per minute per user
+  const RATE_LIMIT_WINDOW_MS = 60 * 1000;
+  const MAX_REQUESTS_PER_WINDOW = 15;
 
   const rateLimiter = (req, res, next) => {
     const ip = req.ip;
     const now = Date.now();
     const userRequests = rateLimitStore.get(ip) || [];
-
     const recentRequests = userRequests.filter(timestamp => now - timestamp < RATE_LIMIT_WINDOW_MS);
 
     if (recentRequests.length >= MAX_REQUESTS_PER_WINDOW) {
-      return res.status(429).json({ 
-        error: 'Too many requests. Please wait a minute and try again.' 
-      });
+      return res.status(429).json({ error: 'Too many requests. Please wait a minute and try again.' });
     }
 
     recentRequests.push(now);
@@ -56,15 +70,12 @@ try {
     next();
   };
 
-
   // --- API Routes ---
 
-  // **NEW**: Add a root endpoint to wake up the server and check its status.
   app.get('/', (req, res) => {
     res.send('Backend is alive and running!');
   });
 
-  // Apply the rate limiter ONLY to the Gemini API endpoint
   app.post('/api/gemini', rateLimiter, async (req, res) => {
     try {
       const { prompt, jsonMode = false } = req.body;
@@ -104,25 +115,26 @@ try {
       res.status(500).json({ error: error.message });
     }
   });
-
+  
   app.post('/api/save-report', async (req, res) => {
       try {
-          const { clientName, clientEmail, clientPhone, reportContent } = req.body;
-          if (!clientName || !clientEmail || !reportContent) {
-              return res.status(400).json({ error: 'Missing required report data.' });
+          const { clientName, clientEmail, clientPhone, reportContent, caseId } = req.body;
+          if (!clientName || !clientEmail || !reportContent || !caseId) {
+              return res.status(400).json({ error: 'Missing required report data or caseId.' });
           }
-          const now = new Date();
-          const datePart = now.toISOString().slice(0, 10).replace(/-/g, "");
-          const randomPart = Math.random().toString(36).substring(2, 6).toUpperCase();
-          const caseNumber = `CI-${datePart}-${randomPart}`;
+
           const docRef = await db.collection('case_reports').add({
-              caseNumber,
+              caseNumber: caseId,
               clientName,
               clientEmail,
               clientPhone: clientPhone || 'Not provided',
               reportContent,
               createdAt: admin.firestore.FieldValue.serverTimestamp()
           });
+
+          const loginRef = db.collection('intake_logins').doc(caseId);
+          await loginRef.update({ status: 'used' });
+
           res.status(200).json({ success: true, documentId: docRef.id });
       } catch (error) {
           console.error('Error saving report to Firestore:', error);
@@ -156,15 +168,63 @@ try {
     }
   });
 
-  app.post('/api/generate-token', async (req, res) => {
-    try {
-        const uid = crypto.randomUUID();
-        const firebaseToken = await admin.auth().createCustomToken(uid);
-        res.status(200).json({ success: true, token: firebaseToken });
-    } catch (error) {
-        console.error('Error generating token:', error);
-        res.status(500).json({ success: false, error: 'Could not generate secure token.' });
-    }
+  // --- SECURE LOGIN SYSTEM ---
+
+  app.post('/api/create-intake-credentials', async (req, res) => {
+      try {
+          const now = new Date();
+          const datePart = now.toISOString().slice(0, 10).replace(/-/g, "");
+          const randomPart = Math.random().toString(36).substring(2, 6).toUpperCase();
+          const caseId = `CI-${datePart}-${randomPart}`;
+          
+          const passcode = crypto.randomBytes(4).toString('hex').toUpperCase().slice(0, 8);
+          const saltRounds = 10;
+          const hashedPasscode = await bcrypt.hash(passcode, saltRounds);
+
+          const loginRef = db.collection('intake_logins').doc(caseId);
+          await loginRef.set({
+              hashedPasscode,
+              status: 'active',
+              createdAt: admin.firestore.FieldValue.serverTimestamp()
+          });
+
+          res.status(200).json({ success: true, caseId, passcode });
+      } catch (error) {
+          console.error("Error creating intake credentials:", error);
+          res.status(500).json({ success: false, error: "Could not create credentials." });
+      }
+  });
+
+  app.post('/api/validate-intake-credentials', async (req, res) => {
+      try {
+          const { caseId, passcode } = req.body;
+          if (!caseId || !passcode) {
+              return res.status(400).json({ success: false, error: "Case ID and Passcode are required." });
+          }
+
+          const loginRef = db.collection('intake_logins').doc(caseId);
+          const loginDoc = await loginRef.get();
+
+          if (!loginDoc.exists) {
+              return res.status(404).json({ success: false, error: "Invalid login details." });
+          }
+
+          const loginData = loginDoc.data();
+          if (loginData.status !== 'active') {
+              return res.status(403).json({ success: false, error: "This intake session has expired." });
+          }
+
+          const isMatch = await bcrypt.compare(passcode, loginData.hashedPasscode);
+
+          if (isMatch) {
+              res.status(200).json({ success: true, message: "Login successful." });
+          } else {
+              res.status(401).json({ success: false, error: "Invalid login details." });
+          }
+      } catch (error) {
+          console.error("Error validating credentials:", error);
+          res.status(500).json({ success: false, error: "Server error during validation." });
+      }
   });
 
   app.post('/api/internal-login', (req, res) => {
@@ -179,7 +239,6 @@ try {
         res.status(401).json({ success: false, error: 'Incorrect password.' });
     }
   });
-
 
   app.listen(PORT, () => {
     console.log(`Server is running on http://localhost:${PORT}`);
