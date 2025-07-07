@@ -1,12 +1,12 @@
 // --- Legal Intake Bot - Backend ---
-// FINAL, PRODUCTION-READY VERSION with Rate Limiting and Keep-Alive endpoint.
-// INCLUDES NEW SINGLE-USE TOKEN AUTHENTICATION SYSTEM
+// SECURE VERSION with temporary, single-use credentials.
 
 const express = require('express');
 const fetch = require('node-fetch');
 const cors = require('cors');
 const admin = require('firebase-admin');
 const crypto = require('crypto');
+const bcrypt = require('bcrypt'); // Added for hashing passcodes
 require('dotenv').config();
 
 // --- Initialize Firebase Admin SDK ---
@@ -37,19 +37,16 @@ try {
   // --- Rate Limiter Middleware ---
   const rateLimitStore = new Map();
   const RATE_LIMIT_WINDOW_MS = 60 * 1000; // 1 minute
-  const MAX_REQUESTS_PER_WINDOW = 15; // Allow 15 requests per minute per user
+  const MAX_REQUESTS_PER_WINDOW = 15;
 
   const rateLimiter = (req, res, next) => {
     const ip = req.ip;
     const now = Date.now();
     const userRequests = rateLimitStore.get(ip) || [];
-
     const recentRequests = userRequests.filter(timestamp => now - timestamp < RATE_LIMIT_WINDOW_MS);
 
     if (recentRequests.length >= MAX_REQUESTS_PER_WINDOW) {
-      return res.status(429).json({ 
-        error: 'Too many requests. Please wait a minute and try again.' 
-      });
+      return res.status(429).json({ error: 'Too many requests. Please wait a minute and try again.' });
     }
 
     recentRequests.push(now);
@@ -57,14 +54,12 @@ try {
     next();
   };
 
-
   // --- API Routes ---
 
   app.get('/', (req, res) => {
     res.send('Backend is alive and running!');
   });
 
-  // Apply the rate limiter ONLY to the Gemini API endpoint
   app.post('/api/gemini', rateLimiter, async (req, res) => {
     try {
       const { prompt, jsonMode = false } = req.body;
@@ -104,25 +99,29 @@ try {
       res.status(500).json({ error: error.message });
     }
   });
-
+  
+  // MODIFIED: Now requires a caseId to deactivate the login credentials after saving.
   app.post('/api/save-report', async (req, res) => {
       try {
-          const { clientName, clientEmail, clientPhone, reportContent } = req.body;
-          if (!clientName || !clientEmail || !reportContent) {
-              return res.status(400).json({ error: 'Missing required report data.' });
+          const { clientName, clientEmail, clientPhone, reportContent, caseId } = req.body;
+          if (!clientName || !clientEmail || !reportContent || !caseId) {
+              return res.status(400).json({ error: 'Missing required report data or caseId.' });
           }
-          const now = new Date();
-          const datePart = now.toISOString().slice(0, 10).replace(/-/g, "");
-          const randomPart = Math.random().toString(36).substring(2, 6).toUpperCase();
-          const caseNumber = `CI-${datePart}-${randomPart}`;
+
+          // Save the report
           const docRef = await db.collection('case_reports').add({
-              caseNumber,
+              caseNumber: caseId, // Use the passed caseId as the caseNumber
               clientName,
               clientEmail,
               clientPhone: clientPhone || 'Not provided',
               reportContent,
               createdAt: admin.firestore.FieldValue.serverTimestamp()
           });
+
+          // Deactivate the login credentials
+          const loginRef = db.collection('intake_logins').doc(caseId);
+          await loginRef.update({ status: 'used' });
+
           res.status(200).json({ success: true, documentId: docRef.id });
       } catch (error) {
           console.error('Error saving report to Firestore:', error);
@@ -156,58 +155,66 @@ try {
     }
   });
 
-  // --- NEW TOKEN AUTHENTICATION SYSTEM ---
+  // --- NEW SECURE LOGIN SYSTEM ---
 
-  // 1. Generate a new single-use access token and store it.
-  app.post('/api/generate-access-token', async (req, res) => {
-    try {
-        const token = crypto.randomBytes(24).toString('hex'); // Generate a secure random token
-        const tokenRef = db.collection('access_tokens').doc(token);
-        
-        await tokenRef.set({
-            used: false,
-            createdAt: admin.firestore.FieldValue.serverTimestamp()
-        });
-
-        res.status(200).json({ success: true, token: token });
-    } catch (error) {
-        console.error('Error generating access token:', error);
-        res.status(500).json({ success: false, error: 'Could not generate secure access token.' });
-    }
-  });
-
-  // 2. Validate a token and mark it as used.
-  app.post('/api/validate-token', async (req, res) => {
+  // 1. NEW: Endpoint to create temporary login credentials
+  app.post('/api/create-intake-credentials', async (req, res) => {
       try {
-          const { token } = req.body;
-          if (!token) {
-              return res.status(400).json({ success: false, error: 'Token is required.' });
-          }
+          const now = new Date();
+          const datePart = now.toISOString().slice(0, 10).replace(/-/g, "");
+          const randomPart = Math.random().toString(36).substring(2, 6).toUpperCase();
+          const caseId = `CI-${datePart}-${randomPart}`;
+          
+          const passcode = crypto.randomBytes(4).toString('hex').toUpperCase().slice(0, 8);
+          const saltRounds = 10;
+          const hashedPasscode = await bcrypt.hash(passcode, saltRounds);
 
-          const tokenRef = db.collection('access_tokens').doc(token);
-          const tokenDoc = await tokenRef.get();
+          const loginRef = db.collection('intake_logins').doc(caseId);
+          await loginRef.set({
+              hashedPasscode,
+              status: 'active', // active, used
+              createdAt: admin.firestore.FieldValue.serverTimestamp()
+          });
 
-          if (!tokenDoc.exists) {
-              return res.status(404).json({ success: false, error: 'Token not found.' });
-          }
-
-          const tokenData = tokenDoc.data();
-
-          if (tokenData.used) {
-              return res.status(403).json({ success: false, error: 'This link has already been used.' });
-          }
-
-          // Mark the token as used to prevent reuse
-          await tokenRef.update({ used: true });
-
-          res.status(200).json({ success: true, message: 'Token is valid.' });
-
+          res.status(200).json({ success: true, caseId, passcode });
       } catch (error) {
-          console.error('Error validating token:', error);
-          res.status(500).json({ success: false, error: 'Server error during token validation.' });
+          console.error("Error creating intake credentials:", error);
+          res.status(500).json({ success: false, error: "Could not create credentials." });
       }
   });
 
+  // 2. NEW: Endpoint to validate credentials from the chatbot
+  app.post('/api/validate-intake-credentials', async (req, res) => {
+      try {
+          const { caseId, passcode } = req.body;
+          if (!caseId || !passcode) {
+              return res.status(400).json({ success: false, error: "Case ID and Passcode are required." });
+          }
+
+          const loginRef = db.collection('intake_logins').doc(caseId);
+          const loginDoc = await loginRef.get();
+
+          if (!loginDoc.exists) {
+              return res.status(404).json({ success: false, error: "Invalid login details." });
+          }
+
+          const loginData = loginDoc.data();
+          if (loginData.status !== 'active') {
+              return res.status(403).json({ success: false, error: "This intake session has expired." });
+          }
+
+          const isMatch = await bcrypt.compare(passcode, loginData.hashedPasscode);
+
+          if (isMatch) {
+              res.status(200).json({ success: true, message: "Login successful." });
+          } else {
+              res.status(401).json({ success: false, error: "Invalid login details." });
+          }
+      } catch (error) {
+          console.error("Error validating credentials:", error);
+          res.status(500).json({ success: false, error: "Server error during validation." });
+      }
+  });
 
   app.post('/api/internal-login', (req, res) => {
     const { password } = req.body;
@@ -221,7 +228,6 @@ try {
         res.status(401).json({ success: false, error: 'Incorrect password.' });
     }
   });
-
 
   app.listen(PORT, () => {
     console.log(`Server is running on http://localhost:${PORT}`);
