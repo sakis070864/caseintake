@@ -1,12 +1,12 @@
 // --- Legal Intake Bot - Backend ---
-// SECURE VERSION with temporary, single-use credentials.
+// SECURE VERSION with temporary, single-use credentials and correct CORS policy.
 
 const express = require('express');
 const fetch = require('node-fetch');
 const cors = require('cors');
 const admin = require('firebase-admin');
 const crypto = require('crypto');
-const bcrypt = require('bcrypt'); // Added for hashing passcodes
+const bcrypt = require('bcrypt');
 require('dotenv').config();
 
 // --- Initialize Firebase Admin SDK ---
@@ -31,12 +31,28 @@ try {
   const app = express();
   const PORT = process.env.PORT || 3001;
 
-  app.use(cors());
+  // FIX: Specific CORS configuration to allow both frontend applications
+  const allowedOrigins = [
+      'https://newcase.netlify.app', 
+      'https://caseintake-chat-bot.netlify.app'
+  ];
+
+  const corsOptions = {
+      origin: (origin, callback) => {
+          if (allowedOrigins.includes(origin) || !origin) {
+              callback(null, true);
+          } else {
+              callback(new Error('Not allowed by CORS'));
+          }
+      }
+  };
+
+  app.use(cors(corsOptions));
   app.use(express.json());
   
   // --- Rate Limiter Middleware ---
   const rateLimitStore = new Map();
-  const RATE_LIMIT_WINDOW_MS = 60 * 1000; // 1 minute
+  const RATE_LIMIT_WINDOW_MS = 60 * 1000;
   const MAX_REQUESTS_PER_WINDOW = 15;
 
   const rateLimiter = (req, res, next) => {
@@ -100,7 +116,6 @@ try {
     }
   });
   
-  // MODIFIED: Now requires a caseId to deactivate the login credentials after saving.
   app.post('/api/save-report', async (req, res) => {
       try {
           const { clientName, clientEmail, clientPhone, reportContent, caseId } = req.body;
@@ -108,9 +123,8 @@ try {
               return res.status(400).json({ error: 'Missing required report data or caseId.' });
           }
 
-          // Save the report
           const docRef = await db.collection('case_reports').add({
-              caseNumber: caseId, // Use the passed caseId as the caseNumber
+              caseNumber: caseId,
               clientName,
               clientEmail,
               clientPhone: clientPhone || 'Not provided',
@@ -118,7 +132,6 @@ try {
               createdAt: admin.firestore.FieldValue.serverTimestamp()
           });
 
-          // Deactivate the login credentials
           const loginRef = db.collection('intake_logins').doc(caseId);
           await loginRef.update({ status: 'used' });
 
@@ -155,9 +168,8 @@ try {
     }
   });
 
-  // --- NEW SECURE LOGIN SYSTEM ---
+  // --- SECURE LOGIN SYSTEM ---
 
-  // 1. NEW: Endpoint to create temporary login credentials
   app.post('/api/create-intake-credentials', async (req, res) => {
       try {
           const now = new Date();
@@ -172,7 +184,7 @@ try {
           const loginRef = db.collection('intake_logins').doc(caseId);
           await loginRef.set({
               hashedPasscode,
-              status: 'active', // active, used
+              status: 'active',
               createdAt: admin.firestore.FieldValue.serverTimestamp()
           });
 
@@ -183,7 +195,6 @@ try {
       }
   });
 
-  // 2. NEW: Endpoint to validate credentials from the chatbot
   app.post('/api/validate-intake-credentials', async (req, res) => {
       try {
           const { caseId, passcode } = req.body;
