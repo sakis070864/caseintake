@@ -1,5 +1,6 @@
 // --- Legal Intake Bot - Backend ---
 // FINAL, PRODUCTION-READY VERSION with Rate Limiting and Keep-Alive endpoint.
+// INCLUDES NEW SINGLE-USE TOKEN AUTHENTICATION SYSTEM
 
 const express = require('express');
 const fetch = require('node-fetch');
@@ -59,7 +60,6 @@ try {
 
   // --- API Routes ---
 
-  // **NEW**: Add a root endpoint to wake up the server and check its status.
   app.get('/', (req, res) => {
     res.send('Backend is alive and running!');
   });
@@ -156,16 +156,58 @@ try {
     }
   });
 
-  app.post('/api/generate-token', async (req, res) => {
+  // --- NEW TOKEN AUTHENTICATION SYSTEM ---
+
+  // 1. Generate a new single-use access token and store it.
+  app.post('/api/generate-access-token', async (req, res) => {
     try {
-        const uid = crypto.randomUUID();
-        const firebaseToken = await admin.auth().createCustomToken(uid);
-        res.status(200).json({ success: true, token: firebaseToken });
+        const token = crypto.randomBytes(24).toString('hex'); // Generate a secure random token
+        const tokenRef = db.collection('access_tokens').doc(token);
+        
+        await tokenRef.set({
+            used: false,
+            createdAt: admin.firestore.FieldValue.serverTimestamp()
+        });
+
+        res.status(200).json({ success: true, token: token });
     } catch (error) {
-        console.error('Error generating token:', error);
-        res.status(500).json({ success: false, error: 'Could not generate secure token.' });
+        console.error('Error generating access token:', error);
+        res.status(500).json({ success: false, error: 'Could not generate secure access token.' });
     }
   });
+
+  // 2. Validate a token and mark it as used.
+  app.post('/api/validate-token', async (req, res) => {
+      try {
+          const { token } = req.body;
+          if (!token) {
+              return res.status(400).json({ success: false, error: 'Token is required.' });
+          }
+
+          const tokenRef = db.collection('access_tokens').doc(token);
+          const tokenDoc = await tokenRef.get();
+
+          if (!tokenDoc.exists) {
+              return res.status(404).json({ success: false, error: 'Token not found.' });
+          }
+
+          const tokenData = tokenDoc.data();
+
+          if (tokenData.used) {
+              return res.status(403).json({ success: false, error: 'This link has already been used.' });
+          }
+
+          // Mark the token as used to prevent reuse
+          await tokenRef.update({ used: true });
+
+          res.status(200).json({ success: true, message: 'Token is valid.' });
+
+      } catch (error) {
+          console.error('Error validating token:', error);
+          res.status(500).json({ success: false, error: 'Server error during token validation.' });
+      }
+  });
+
 
   app.post('/api/internal-login', (req, res) => {
     const { password } = req.body;
