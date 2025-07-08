@@ -31,23 +31,8 @@ try {
   const app = express();
   const PORT = process.env.PORT || 3001;
 
-  // FIX: Specific CORS configuration to allow both frontend applications
-  const allowedOrigins = [
-      'https://newcase.netlify.app', 
-      'https://caseintake-chat-bot.netlify.app'
-  ];
-
-  const corsOptions = {
-      origin: (origin, callback) => {
-          if (allowedOrigins.includes(origin) || !origin) {
-              callback(null, true);
-          } else {
-              callback(new Error('Not allowed by CORS'));
-          }
-      }
-  };
-
-  app.use(cors(corsOptions));
+  // FIX: Using a more permissive CORS policy to resolve connection issues.
+  app.use(cors());
   app.use(express.json());
   
   // --- Rate Limiter Middleware ---
