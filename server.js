@@ -103,15 +103,24 @@ try {
   // --- ENDPOINT TO FORMAT THE REPORT ---
   app.post('/api/format-report', rateLimiter, async (req, res) => {
     try {
-        const { reportData } = req.body;
+        const { reportData, reportCreatedAt } = req.body; // <-- Receive timestamp from frontend
         if (!reportData) {
             return res.status(400).json({ error: 'Report data is required.' });
         }
         
-        const today = new Date();
-        const formattedDate = today.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+        // **FIX**: Use the original report's creation date and time, not the current time.
+        const reportDate = reportCreatedAt ? new Date(reportCreatedAt._seconds * 1000) : new Date();
+        
+        // **FIX**: Format to include both date and time for evidence.
+        const formattedDateTime = reportDate.toLocaleString('en-US', {
+            year: 'numeric',
+            month: 'long',
+            day: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+            timeZoneName: 'short'
+        });
 
-        // **FIX**: Updated prompt to be more explicit about the MEMORANDUM header formatting.
         const formattingPrompt = `
             You are a Senior Paralegal tasked with converting raw JSON intake data into a formal, well-structured internal memorandum for the Supervising Attorney.
             The memorandum must be clear, professional, and easy to read.
@@ -120,7 +129,7 @@ try {
             1.  **MEMORANDUM Header**: Start with a standard memo header. Use the following format exactly, without any asterisks or other formatting on the labels:
                 TO: Supervising Attorney
                 FROM: Senior Paralegal
-                DATE: ${formattedDate}
+                DATE: ${formattedDateTime}
                 RE: Case Intake - [Client's Name] Regarding [Briefly describe the case matter]
             2.  **Case Summary**: Write a concise, one-paragraph summary of the client's situation based on their initial statement.
             3.  **Client's Initial Statement**: Include the client's full, unedited initial statement.
