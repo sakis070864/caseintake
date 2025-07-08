@@ -103,24 +103,12 @@ try {
   // --- ENDPOINT TO FORMAT THE REPORT ---
   app.post('/api/format-report', rateLimiter, async (req, res) => {
     try {
-        const { reportData, reportCreatedAt } = req.body; // <-- Receive timestamp from frontend
-        if (!reportData) {
-            return res.status(400).json({ error: 'Report data is required.' });
+        // **FIX**: Now accepts a pre-formatted date string from the client's browser.
+        const { reportData, formattedDateTime } = req.body;
+        if (!reportData || !formattedDateTime) {
+            return res.status(400).json({ error: 'Report data and formatted date are required.' });
         }
         
-        // **FIX**: Use the original report's creation date and time, not the current time.
-        const reportDate = reportCreatedAt ? new Date(reportCreatedAt._seconds * 1000) : new Date();
-        
-        // **FIX**: Format to include both date and time for evidence.
-        const formattedDateTime = reportDate.toLocaleString('en-US', {
-            year: 'numeric',
-            month: 'long',
-            day: 'numeric',
-            hour: '2-digit',
-            minute: '2-digit',
-            timeZoneName: 'short'
-        });
-
         const formattingPrompt = `
             You are a Senior Paralegal tasked with converting raw JSON intake data into a formal, well-structured internal memorandum for the Supervising Attorney.
             The memorandum must be clear, professional, and easy to read.
