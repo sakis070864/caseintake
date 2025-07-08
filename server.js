@@ -33,12 +33,12 @@ try {
 
   // FIX: Using a more permissive CORS policy to resolve connection issues.
   app.use(cors());
-  app.use(express.json());
+  app.use(express.json({limit: '10mb'}));
   
   // --- Rate Limiter Middleware ---
   const rateLimitStore = new Map();
   const RATE_LIMIT_WINDOW_MS = 60 * 1000;
-  const MAX_REQUESTS_PER_WINDOW = 15;
+  const MAX_REQUESTS_PER_WINDOW = 20; // Increased limit slightly
 
   const rateLimiter = (req, res, next) => {
     const ip = req.ip;
@@ -100,6 +100,62 @@ try {
       res.status(500).json({ error: error.message });
     }
   });
+
+  // --- NEW ENDPOINT TO FORMAT THE REPORT ---
+  app.post('/api/format-report', rateLimiter, async (req, res) => {
+    try {
+        const { reportData } = req.body;
+        if (!reportData) {
+            return res.status(400).json({ error: 'Report data is required.' });
+        }
+
+        const formattingPrompt = `
+            You are a Senior Paralegal tasked with converting raw JSON intake data into a formal, well-structured internal memorandum for the Supervising Attorney.
+            The memorandum must be clear, professional, and easy to read.
+
+            Follow this exact structure and formatting:
+            1.  **MEMORANDUM Header**: Start with a standard memo header. Use today's date.
+            2.  **Case Summary**: Write a concise, one-paragraph summary of the client's situation based on their initial statement.
+            3.  **Client's Initial Statement**: Include the client's full, unedited initial statement.
+            4.  **Intake Interview Q&A**: Format the interview transcript into a clean, readable Q&A list.
+            5.  **Key Facts & Timeline**: Extract and list the most critical facts, dates, and figures in a bulleted list.
+            6.  **Potential Legal Issues**: Based on the entire report, identify a list of potential legal claims or areas of law that apply.
+
+            Here is the raw JSON data:
+            ---
+            ${reportData}
+            ---
+        `;
+        
+        const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+        if (!GEMINI_API_KEY) throw new Error("GEMINI_API_KEY is not set.");
+        
+        const modelName = 'gemini-1.5-flash-latest';
+        const API_ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${GEMINI_API_KEY}`;
+
+        const payload = {
+            contents: [{ parts: [{ text: formattingPrompt }] }]
+        };
+
+        const geminiResponse = await fetch(API_ENDPOINT, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+
+        const geminiData = await geminiResponse.json();
+        if (!geminiResponse.ok || !geminiData.candidates || !geminiData.candidates[0].content) {
+            const errorMessage = geminiData?.error?.message || 'Google API Error while formatting report.';
+            throw new Error(errorMessage);
+        }
+
+        res.json({ formattedReport: geminiData.candidates[0].content.parts[0].text });
+
+    } catch (error) {
+        console.error('Error in /api/format-report:', error);
+        res.status(500).json({ error: error.message });
+    }
+  });
   
   app.post('/api/save-report', async (req, res) => {
       try {
@@ -113,7 +169,7 @@ try {
               clientName,
               clientEmail,
               clientPhone: clientPhone || 'Not provided',
-              reportContent,
+              reportContent, // This will now be the raw JSON string
               createdAt: admin.firestore.FieldValue.serverTimestamp()
           });
 
