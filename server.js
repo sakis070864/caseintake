@@ -38,7 +38,7 @@ try {
   // --- Rate Limiter Middleware ---
   const rateLimitStore = new Map();
   const RATE_LIMIT_WINDOW_MS = 60 * 1000;
-  const MAX_REQUESTS_PER_WINDOW = 20; // Increased limit slightly
+  const MAX_REQUESTS_PER_WINDOW = 20;
 
   const rateLimiter = (req, res, next) => {
     const ip = req.ip;
@@ -101,20 +101,24 @@ try {
     }
   });
 
-  // --- NEW ENDPOINT TO FORMAT THE REPORT ---
+  // --- ENDPOINT TO FORMAT THE REPORT ---
   app.post('/api/format-report', rateLimiter, async (req, res) => {
     try {
         const { reportData } = req.body;
         if (!reportData) {
             return res.status(400).json({ error: 'Report data is required.' });
         }
+        
+        // **FIX**: Generate the current date on the server to ensure accuracy.
+        const today = new Date();
+        const formattedDate = today.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
 
         const formattingPrompt = `
             You are a Senior Paralegal tasked with converting raw JSON intake data into a formal, well-structured internal memorandum for the Supervising Attorney.
             The memorandum must be clear, professional, and easy to read.
 
             Follow this exact structure and formatting:
-            1.  **MEMORANDUM Header**: Start with a standard memo header. Use today's date.
+            1.  **MEMORANDUM Header**: Start with a standard memo header. The date for the memo is exactly: ${formattedDate}.
             2.  **Case Summary**: Write a concise, one-paragraph summary of the client's situation based on their initial statement.
             3.  **Client's Initial Statement**: Include the client's full, unedited initial statement.
             4.  **Intake Interview Q&A**: Format the interview transcript into a clean, readable Q&A list.
