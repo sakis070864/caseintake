@@ -31,7 +31,6 @@ try {
   const app = express();
   const PORT = process.env.PORT || 3001;
 
-  // FIX: Using a more permissive CORS policy to resolve connection issues.
   app.use(cors());
   app.use(express.json({limit: '10mb'}));
   
@@ -109,16 +108,20 @@ try {
             return res.status(400).json({ error: 'Report data is required.' });
         }
         
-        // **FIX**: Generate the current date on the server to ensure accuracy.
         const today = new Date();
         const formattedDate = today.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
 
+        // **FIX**: Updated prompt to be more explicit about the MEMORANDUM header formatting.
         const formattingPrompt = `
             You are a Senior Paralegal tasked with converting raw JSON intake data into a formal, well-structured internal memorandum for the Supervising Attorney.
             The memorandum must be clear, professional, and easy to read.
 
             Follow this exact structure and formatting:
-            1.  **MEMORANDUM Header**: Start with a standard memo header. The date for the memo is exactly: ${formattedDate}.
+            1.  **MEMORANDUM Header**: Start with a standard memo header. Use the following format exactly, without any asterisks or other formatting on the labels:
+                TO: Supervising Attorney
+                FROM: Senior Paralegal
+                DATE: ${formattedDate}
+                RE: Case Intake - [Client's Name] Regarding [Briefly describe the case matter]
             2.  **Case Summary**: Write a concise, one-paragraph summary of the client's situation based on their initial statement.
             3.  **Client's Initial Statement**: Include the client's full, unedited initial statement.
             4.  **Intake Interview Q&A**: Format the interview transcript into a clean, readable Q&A list.
@@ -173,7 +176,7 @@ try {
               clientName,
               clientEmail,
               clientPhone: clientPhone || 'Not provided',
-              reportContent, // This will now be the raw JSON string
+              reportContent, 
               createdAt: admin.firestore.FieldValue.serverTimestamp()
           });
 
